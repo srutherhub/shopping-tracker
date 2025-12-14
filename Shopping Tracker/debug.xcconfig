@@ -1,0 +1,10 @@
+//
+//  debug.xcconfig
+//  Shopping Tracker
+//
+//  Created by Samuel Rutherford on 12/13/25.
+//
+
+// Configuration settings file format documentation can be found at:
+// https://developer.apple.com/documentation/xcode/adding-a-build-configuration-file-to-your-project
+API_BASE_URL = 192.168.1.66:8080/api

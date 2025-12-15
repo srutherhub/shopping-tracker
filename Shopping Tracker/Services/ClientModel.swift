@@ -39,74 +39,88 @@ struct RequestSignature: Encodable{
     var signature:String
 }
 
-struct SessionManager {
-    var accessToken: String?
-}
-
 final class ClientModel {
-    static private var baseUrl: String {
+    static var baseUrl: String {
         guard let host = Bundle.main.object(forInfoDictionaryKey: "API_BASE_URL") as? String, !host.isEmpty else {
             fatalError("API_BASE_URL not set in Info.plist")
         }
-        #if DEBUG
+#if DEBUG
         return "http://\(host)"
-        #else
+#else
         return "https://\(host)"
-        #endif
+#endif
     }
-
-    static var session:SessionManager = SessionManager()
-    
     
     static func createRequestSignature() -> RequestSignature {
         let timestamp = Int(Date().timeIntervalSince1970)
         let appbundle = Bundle.main.bundleIdentifier
         let deviceId = UIDevice.current.identifierForVendor?.uuidString
         let secretBase64 = "mEyzK0H5DEYIePztJZof/DD71Cb8RQi5bN5kG60SnPjlGCawP+pMN29qHBw+XXCYHCELtgJALYMMV24Cgu4Qgg=="
-                guard let secretData = Data(base64Encoded: secretBase64) else {
-                    fatalError("Invalid secret key")
-                }
+        guard let secretData = Data(base64Encoded: secretBase64) else {
+            fatalError("Invalid secret key")
+        }
         let secret = SymmetricKey(data: secretData)
         let message = Data("\(appbundle ?? "")|\(String(timestamp))|\(deviceId ?? "")".utf8)
         let signature = HMAC<SHA256>.authenticationCode(for: message, using: secret)
         let hmacString = signature.map { String(format: "%02hhx", $0) }.joined()
         return RequestSignature(bundle_id: appbundle ?? "", device_id: deviceId ?? "", datetime: timestamp, signature: hmacString)
     }
-    
-    static func getAccesToken() async throws{
-        guard let url = URL(string: ClientModel.baseUrl + "/auth/register") else {
-            throw ClientError.invalidURL
-        }
-        let requestBody = ClientModel.createRequestSignature()
-        var request = URLRequest(url: url)
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpMethod = "POST"
-        do {
-            let bodyData = try JSONEncoder().encode(requestBody)
-            request.httpBody = bodyData
-        } catch {
-            throw ClientError.encodingFailed(error)
-        }
-        
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            if let httpResponse = response as? HTTPURLResponse {
-                        if let authHeader = httpResponse.value(forHTTPHeaderField: "Authorization") {
-                            let token = authHeader.replacingOccurrences(of: "Bearer ", with: "")
-                            ClientModel.session.accessToken = token
-                        } else {
-                            let decoded = try JSONDecoder().decode(RequestError.self, from: data)
-                            print(decoded)
-                            throw ClientError.noAuthHeader
-                        }
-                    }
-        } catch {
-            throw ClientError.networkFailed(error)
-        }
-
-        
-    }
 }
 
 
+actor AuthService {
+    private(set) var accessToken: String?
+    
+    func load() async throws {
+        self.accessToken = try await fetchToken()
+    }
+    
+    func refresh() async throws {
+        self.accessToken = try await fetchToken()
+    }
+    
+    private func fetchToken() async throws -> String {
+        guard let url = URL(string: ClientModel.baseUrl + "/auth/register") else {
+            throw ClientError.invalidURL
+        }
+        
+        let body = ClientModel.createRequestSignature()
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(body)
+        
+        let (_, response) = try await URLSession.shared.data(for: request)
+        
+        guard
+            let http = response as? HTTPURLResponse,
+            let header = http.value(forHTTPHeaderField: "Authorization")
+        else {
+            throw ClientError.noAuthHeader
+        }
+        
+        return header.replacingOccurrences(of: "Bearer ", with: "")
+    }
+}
 
+struct APIClient {
+    let auth: AuthService
+
+    func send(_ request: URLRequest) async throws -> Data {
+        var request = request
+        guard let token = await auth.accessToken else {
+            throw ClientError.noAuthHeader
+        }
+
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        if let http = response as? HTTPURLResponse, http.statusCode == 401 {
+            try await auth.refresh()
+            return try await send(request)
+        }
+
+        return data
+    }
+}

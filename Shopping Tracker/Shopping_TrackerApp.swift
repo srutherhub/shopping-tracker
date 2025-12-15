@@ -10,21 +10,53 @@ import SwiftData
 
 @main
 struct Shopping_TrackerApp: App {
-    var sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-        ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
-
-        do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
-        } catch {
-            fatalError("Could not create ModelContainer: \(error)")
+    @StateObject private var session = AppSession()
+    
+    let modelContainer: ModelContainer
+        
+        init() {
+            do {
+                modelContainer = try ModelContainer(
+                    for: Receipt.self,
+                    Location.self,
+                    Item.self,
+                    Transaction.self
+                )
+            } catch {
+                fatalError("Could not initialize ModelContainer: \(error)")
+            }
         }
-    }()
-
+    
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .modelContainer(modelContainer)
+                .environmentObject(session)
+                .task {
+                    await session.start()
+                }
         }
     }
 }
+
+@MainActor
+final class AppSession: ObservableObject {
+    let auth = AuthService()
+    let api: APIClient
+
+    @Published var ready = false
+
+    init() {
+        self.api = APIClient(auth: auth)
+    }
+
+    func start() async {
+        do {
+            _ = try await auth.load()
+            ready = true
+        } catch {
+            print("Failed to start session:", error)
+        }
+    }
+}
+
